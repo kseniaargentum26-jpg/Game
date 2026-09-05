@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Парадокс Монти Холла (20 Дверей)</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --text-color: #ffffff;
+            --btn-color: #242424;
+            --btn-border: #3a3a3a;
+            --accent-color: #2480f7;
+            --success-color: #2ec4b6;
+            --danger-color: #e71d36;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--tg-theme-bg-color, var(--bg-color));
+            color: var(--tg-theme-text-color, var(--text-color));
+            margin: 0;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 15px;
+            width: 100%;
+        }
+        .stats-bar {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 400px;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px 15px;
+            border-radius: 12px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .instructions {
+            text-align: center;
+            font-size: 15px;
+            margin-bottom: 20px;
+            min-height: 44px;
+            max-width: 400px;
+            color: var(--tg-theme-hint-color, #aaaaaa);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            width: 100%;
+            max-width: 400px;
+            margin-bottom: 20px;
+        }
+        .door {
+            aspect-ratio: 1;
+            background-color: var(--tg-theme-secondary-bg-color, var(--btn-color));
+            border: 2px solid var(--btn-border);
+            border-radius: 12px;
+            color: inherit;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .door.selected {
+            border-color: var(--tg-theme-button-color, var(--accent-color));
+            background-color: rgba(36, 128, 247, 0.1);
+        }
+        .door.revealed {
+            opacity: 0.15;
+            pointer-events: none;
+        }
+        .door.win {
+            background-color: var(--success-color) !important;
+            border-color: var(--success-color) !important;
+            color: white;
+        }
+        .door.lose {
+            background-color: var(--danger-color) !important;
+            border-color: var(--danger-color) !important;
+            color: white;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+            max-width: 400px;
+            margin-top: auto;
+            margin-bottom: 20px;
+        }
+        .btn {
+            flex: 1;
+            padding: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            background-color: var(--tg-theme-button-color, var(--accent-color));
+            color: var(--tg-theme-button-text-color, #ffffff);
+            display: none;
+        }
+        .btn-secondary {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: var(--text-color);
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 100;
+        }
+        .modal-content {
+            background: #242424;
+            padding: 25px;
+            border-radius: 16px;
+            text-align: center;
+            max-width: 320px;
+            width: 100%;
+            border: 1px solid #3a3a3a;
+        }
+        .modal h2 { margin-top: 0; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h3>Монти Холл: 20 Дверей</h3>
+    </div>
+
+    <div class="stats-bar">
+        <div>Попытки: <span id="games-left">15/15</span></div>
+        <div>Побед: <span id="win-rate">0%</span> (<span id="wins-count">0</span>)</div>
+    </div>
+
+    <div class="instructions" id="instruction-text">
+        Выберите одну из 20 дверей. Под одной из них спрятан крестик (X)!
+    </div>
+
+    <div class="grid" id="doors-grid"></div>
+
+    <div class="controls">
+        <button class="btn btn-secondary" id="keep-btn">Оставить выбор</button>
+        <button class="btn" id="switch-btn">Изменить выбор</button>
+        <button class="btn" id="next-btn" style="width:100%">Следующий раунд</button>
+    </div>
+
+    <div class="modal" id="game-over-modal">
+        <div class="modal-content">
+            <h2>Сессия окончена!</h2>
+            <p>Вы завершили все 15 игр.</p>
+            <p id="final-stats"></p>
+            <button class="btn" id="restart-btn" style="display:block; width:100%">Начать заново</button>
+        </div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        const TOTAL_DOORS = 20;
+        const TOTAL_GAMES_LIMIT = 15;
+
+        // Инициализация локальной статистики (чтобы сохранялась между перезапусками приложения)
+        let localStats = JSON.parse(localStorage.getItem('monty_hall_stats')) || {
+            wins: 0,
+            losses: 0,
+            gamesPlayed: 0
+        };
+
+        let currentSessionGames = 0;
+        let sessionWins = 0;
+        
+        let winningDoor = -1;
+        let firstChoice = -1;
+        let secondChoice = -1;
+        let hostOpenedDoor = -1;
+        let gameState = 'first_choice'; // 'first_choice', 'decision', 'revealed'
+
+        const grid = document.getElementById('doors-grid');
+        const instruction = document.getElementById('instruction-text');
+        const keepBtn = document.getElementById('keep-btn');
+        const switchBtn = document.getElementById('switch-btn');
+        const nextBtn = document.getElementById('next-btn');
+        const gamesLeftEl = document.getElementById('games-left');
+        const winRateEl = document.getElementById('win-rate');
+        const winsCountEl = document.getElementById('wins-count');
+        const modal = document.getElementById('game-over-modal');
+        const finalStatsEl = document.getElementById('final-stats');
+        const restartBtn = document.getElementById('restart-btn');
+
+        function updateStatsUI() {
+            gamesLeftEl.textContent = `${TOTAL_GAMES_LIMIT - currentSessionGames}/${TOTAL_GAMES_LIMIT}`;
+            const total = localStats.wins + localStats.losses;
+            const rate = total > 0 ? Math.round((localStats.wins / total) * 100) : 0;
+            winRateEl.textContent = `${rate}%`;
+            winsCountEl.textContent = localStats.wins;
+        }
+
+        function initRound() {
+            grid.innerHTML = '';
+            winningDoor = Math.floor(Math.random() * TOTAL_DOORS);
+            firstChoice = -1;
+            secondChoice = -1;
+            hostOpenedDoor = -1;
+            gameState = 'first_choice';
+
+            instruction.textContent = "Выберите одну из 20 дверей. Под одной из них скрыт заветный крестик!";
+            keepBtn.style.display = 'none';
+            switchBtn.style.display = 'none';
+            nextBtn.style.display = 'none';
+
+            for (let i = 0; i < TOTAL_DOORS; i++) {
+                const door = document.createElement('button');
+                door.className = 'door';
+                door.textContent = i + 1;
+                door.dataset.index = i;
+                door.addEventListener('click', () => handleDoorClick(i));
+                grid.appendChild(door);
+            }
+            updateStatsUI();
+        }
+
+        function handleDoorClick(index) {
+            if (gameState !== 'first_choice') return;
+            
+            firstChoice = index;
+            gameState = 'decision';
+            
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+
+            // Ведущий убирает 18 дверей
+            // Должна остаться дверь игрока + дверь с крестиком (если игрок угадал, берем любую другую)
+            let availableDoors = [];
+            for (let i = 0; i < TOTAL_DOORS; i++) {
+                if (i !== firstChoice && i !== winningDoor) {
+                    availableDoors.push(i);
+                }
+            }
+
+            // Если игрок изначально выбрал выигрышную, оставляем одну любую случайную пустышку
+            if (firstChoice === winningDoor) {
+                const randomIndex = Math.floor(Math.random() * availableDoors.length);
+                hostOpenedDoor = availableDoors[randomIndex];
+            } else {
+                // Если игрок выбрал пустышку, то вторая оставшаяся — это обязательно выигрышная
+                hostOpenedDoor = winningDoor;
+            }
+
+            // Анимация удаления лишних дверей
+            const doors = document.querySelectorAll('.door');
+            doors.forEach((door, i) => {
+                if (i === firstChoice) {
+                    door.classList.add('selected');
+                } else if (i === hostOpenedDoor) {
+                    // Оставляем эту дверь
+                } else {
+                    door.classList.add('revealed');
+                }
+            });
+
+            instruction.textContent = `Ведущий убрал 18 пустых дверей! Осталась ваша дверь (${firstChoice + 1}) и дверь (${hostOpenedDoor + 1}). Измените выбор или подтвердите текущий?`;
+            keepBtn.style.display = 'block';
+            switchBtn.style.display = 'block';
+        }
+
+        keepBtn.addEventListener('click', () => revealResult(firstChoice));
+        switchBtn.addEventListener('click', () => revealResult(hostOpenedDoor));
+
+        function revealResult(finalChoice) {
+            gameState = 'revealed';
+            secondChoice = finalChoice;
+
+            keepBtn.style.display = 'none';
+            switchBtn.style.display = 'none';
+
+            const isWin = finalChoice === winningDoor;
+            currentSessionGames++;
+
+            if (isWin) {
+                sessionWins++;
+                localStats.wins++;
+                instruction.textContent = "Поздравляем! Вы нашли крестик! 🎉";
+                if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+            } else {
+                localStats.losses++;
+                instruction.textContent = "Увы! За этой дверью ничего нет. 😢";
+                if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('error');
+            }
+
+            localStats.gamesPlayed++;
+            localStorage.setItem('monty_hall_stats', JSON.stringify(localStats));
+            updateStatsUI();
+
+            // Показываем где был крестик
+            const doors = document.querySelectorAll('.door');
+            doors.forEach((door, i) => {
+                door.classList.remove('selected', 'revealed');
+                if (i === winningDoor) {
+                    door.textContent = '❌';
+                    door.classList.add('win');
+                } else {
+                    door.textContent = '•';
+                    door.classList.add('revealed');
+                }
+                if (i === finalChoice && !isWin) {
+                    door.classList.add('lose');
+                }
+            });
+
+            nextBtn.style.display = 'block';
+        }
+
+        nextBtn.addEventListener('click', () => {
+            if (currentSessionGames >= TOTAL_GAMES_LIMIT) {
+                showGameOver();
+            } else {
+                initRound();
+            }
+        });
+
+        function showGameOver() {
+            modal.style.display = 'flex';
+            const total = localStats.wins + localStats.losses;
+            const globalRate = total > 0 ? Math.round((localStats.wins / total) * 100) : 0;
+            
+            finalStatsEl.innerHTML = `
+                Результат сессии: <b>${sessionWins}</b> из 15 побед.<br><br>
+                <b>Общая статистика приложения:</b><br>
+                Всего сыграно: ${localStats.gamesPlayed}<br>
+                Всего побед: ${localStats.wins}<br>
+                Глобальный шанс победы: ${globalRate}%
+            `;
+        }
+
+        restartBtn.addEventListener('click', () => {
+            currentSessionGames = 0;
+            sessionWins = 0;
+            modal.style.display = 'none';
+            initRound();
+        });
+
+        // Старт игры
+        initRound();
+    </script>
+</body>
+</html>
